@@ -1,0 +1,13 @@
+# requirements.txt
+joblib
+psycopg2-binary
+python-dotenv
+yfinance
+pandas
+numpy
+scikit-learn
+xgboost
+sqlalchemy
+psycopg2
+matplotlib
+
