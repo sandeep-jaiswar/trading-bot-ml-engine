@@ -79,10 +79,8 @@ def incremental_training(folder_path: str, output_folder: str, initial_model: XG
                 model.fit(
                     X_train, 
                     y_train, 
-                    eval_set=[(X_test, y_test)], 
-                    early_stopping_rounds=10, 
+                    eval_set=[(X_test, y_test)],
                     verbose=True,
-                    eval_metric='rmse'  # Directly passing eval_metric here
                 )
 
                 # Evaluate the model

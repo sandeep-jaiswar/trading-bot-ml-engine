@@ -86,8 +86,8 @@ def backtest(ticker: str, initial_balance=10000):
     try:
         # File paths
         data_path = os.path.join("src", "data", "processed", f"{ticker}_with_indicators.xlsx")
-        model_path = os.path.join("src", "models", "artifacts", f"{ticker}_xgb_model.json")
-        scaler_path = os.path.join("src", "models", "artifacts", f"{ticker}_scaler.pkl")
+        model_path = os.path.join("src", "models", "artifacts", "incremental_xgb_model.json")
+        scaler_path = os.path.join("src", "models", "artifacts", "incremental_scaler.pkl")
 
         # Load data
         if not os.path.exists(data_path):
