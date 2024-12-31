@@ -5,51 +5,96 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report
 from xgboost import XGBRegressor
 import pickle
+import logging
 
-def preprocess_backtest_data(data: pd.DataFrame, scaler, features):
+# Set up logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+def preprocess_backtest_data(data: pd.DataFrame, scaler, features: list):
     """
-    Preprocess data for backtesting: include lag features and apply scaler.
+    Preprocess data for backtesting: fill missing values, create lag features, and scale the data.
     """
-    # Forward fill missing values
-    data = data.fillna(method='ffill')
+    try:
+        # Fill missing values
+        data.ffill(inplace=True)
 
-    # Create lag features
-    for col in features:
-        data[f'{col}_Lag1'] = data[col].shift(1)
+        data.dropna(inplace=True)
 
-    # Drop rows with NaN values introduced by lagging
-    data.dropna(inplace=True)
+        # Create lag features
+        lag_features = []
+        for col in features:
+            lag_col = f"{col}_Lag1"
+            data[lag_col] = data[col].shift(1)
+            lag_features.append(lag_col)
 
-    # Extract the required features (including lag features)
-    X = data[features + [f'{col}_Lag1' for col in features]]
+        # Drop rows with NaN values introduced by lagging
+        data.dropna(inplace=True)
 
-    # Apply the scaler
-    X_scaled = scaler.transform(X)
+        # Prepare feature matrix
+        X = data[features + lag_features]
 
-    return data, X_scaled
+        # Scale features
+        X_scaled = scaler.transform(X)
+
+        return data, X_scaled
+    except Exception as e:
+        logging.error(f"Error during preprocessing: {e}")
+        raise
+
+
+def simulate_trades(data: pd.DataFrame, initial_balance: float):
+    """
+    Simulate trading strategy based on predictions.
+    """
+    try:
+        balance = initial_balance
+        positions = 0  # Current holdings
+        equity_curve = [balance]
+
+        for i in range(len(data) - 1):
+            prediction = data.iloc[i]['Prediction']
+            close_price = data.iloc[i]['Close']
+
+            # Buy signal
+            if prediction == 1 and positions == 0:
+                positions = balance / close_price
+                balance = 0
+
+            # Sell signal
+            elif prediction == -1 and positions > 0:
+                balance = positions * close_price
+                positions = 0
+
+            # Track equity
+            next_close = data.iloc[i + 1]['Close']
+            equity = balance + (positions * next_close if positions > 0 else 0)
+            equity_curve.append(equity)
+
+        # Final balance
+        final_balance = balance + (positions * data.iloc[-1]['Close'] if positions > 0 else 0)
+
+        return final_balance, equity_curve
+    except Exception as e:
+        logging.error(f"Error during trade simulation: {e}")
+        raise
+
 
 def backtest(ticker: str, initial_balance=10000):
     """
     Backtest a trading strategy using a trained model.
-
-    Parameters:
-    - ticker: Stock ticker for backtesting.
-    - initial_balance: Starting capital for the backtest.
-
-    Returns:
-    - backtest_report: A dictionary with performance metrics.
     """
     try:
-        # Load data
-        d_path = os.path.join("src", "data", "processed", f"{ticker}_with_indicators.xlsx")
-        if not os.path.exists(d_path):
-            raise FileNotFoundError(f"Processed data file not found: {d_path}")
-        data = pd.read_excel(d_path)
-
-        # Load model and scaler
+        # File paths
+        data_path = os.path.join("src", "data", "processed", f"{ticker}_with_indicators.xlsx")
         model_path = os.path.join("src", "models", "artifacts", f"{ticker}_xgb_model.json")
         scaler_path = os.path.join("src", "models", "artifacts", f"{ticker}_scaler.pkl")
 
+        # Load data
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f"Processed data file not found: {data_path}")
+        data = pd.read_excel(data_path)
+
+        # Load model and scaler
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
         if not os.path.exists(scaler_path):
@@ -67,49 +112,38 @@ def backtest(ticker: str, initial_balance=10000):
             "BB_lower", "ATR", "Stoch_K", "Stoch_D", "OBV", "CCI", "ROC", 
             "MFI", "Chaikin", "WILLR", "SAR"
         ]
-        
-        print(f"Backtesting strategy for {ticker}...")
 
-        # Preprocess data for backtesting
+        # Preprocess data
         data, X_scaled = preprocess_backtest_data(data, scaler, features)
 
         # Predict price movements
         data['Prediction'] = model.predict(X_scaled)
-        data['Prediction'] = np.where(data['Prediction'] > 0, 1, -1)  # Convert predictions to buy/sell signals
+        data['Prediction'] = np.where(data['Prediction'] > 0, 1, -1)
 
         # Generate target
-        data['Target'] = np.sign(data['Close'].shift(-1) - data['Close'])  # 1 for up, -1 for down
+        data['Target'] = np.sign(data['Close'].shift(-1) - data['Close'])
 
         # Simulate trades
-        balance = initial_balance
-        positions = 0  # Current holdings
-        equity_curve = [balance]
-
-        for i in range(len(data) - 1):
-            # Buy signal
-            if data.loc[i, 'Prediction'] == 1 and positions == 0:
-                positions = balance / data.loc[i, 'Close']  # Buy stock
-                balance = 0
-
-            # Sell signal
-            elif data.loc[i, 'Prediction'] == -1 and positions > 0:
-                balance = positions * data.loc[i, 'Close']  # Sell stock
-                positions = 0
-
-            # Track equity
-            equity_curve.append(balance + (positions * data.loc[i + 1, 'Close'] if positions > 0 else 0))
-
-        # Final balance
-        final_balance = balance + (positions * data.iloc[-1]['Close'] if positions > 0 else 0)
+        final_balance, equity_curve = simulate_trades(data, initial_balance)
 
         # Performance metrics
         roi = (final_balance - initial_balance) / initial_balance * 100
         accuracy = (data['Target'] == data['Prediction']).mean() * 100
 
-        conf_matrix = confusion_matrix(data['Target'], data['Prediction'], labels=[-1, 1])
-        class_report = classification_report(data['Target'], data['Prediction'], labels=[-1, 1])
+        # Drop rows with NaN in Target or Prediction
+        data.dropna(subset=['Target', 'Prediction'], inplace=True)
 
-        # Visualizations
+        # Calculate metrics
+        conf_matrix = confusion_matrix(data['Target'], data['Prediction'], labels=[-1, 1])
+        class_report = classification_report(data['Target'], data['Prediction'], labels=[-1, 1], zero_division=1)
+
+        # Save results to Excel
+        results_path = os.path.join("src", "backtesting", f"results/{ticker}_backtest_results.xlsx")
+        os.makedirs(os.path.dirname(results_path), exist_ok=True)
+        data.to_excel(results_path, index=False)
+        logging.info(f"Backtest results saved to {results_path}")
+
+        # Visualize equity curve
         plt.figure(figsize=(10, 6))
         plt.plot(equity_curve, label="Equity Curve")
         plt.title("Equity Curve")
@@ -118,7 +152,7 @@ def backtest(ticker: str, initial_balance=10000):
         plt.legend()
         plt.show()
 
-        # Generate backtest report
+        # Generate report
         backtest_report = {
             "Initial Balance": initial_balance,
             "Final Balance": final_balance,
@@ -128,15 +162,9 @@ def backtest(ticker: str, initial_balance=10000):
             "Classification Report": class_report,
         }
 
-        print("\nConfusion Matrix:\n", conf_matrix)
-        print("\nClassification Report:\n", class_report)
-        print("\nBacktest Summary:")
-        for k, v in backtest_report.items():
-            if k != "Confusion Matrix" and k != "Classification Report":
-                print(f"{k}: {v}")
-
+        logging.info(f"Backtest completed for {ticker}.")
         return backtest_report
 
     except Exception as e:
-        print(f"An error occurred during backtesting: {e}")
+        logging.error(f"An error occurred during backtesting: {e}")
         return None
