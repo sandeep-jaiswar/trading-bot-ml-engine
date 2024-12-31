@@ -47,6 +47,8 @@ def add_technical_indicators(ticker: str):
 
         # Save the data with added indicators
         data.to_excel(output_file, index=False)
+        
+        os.remove(input_file)
 
         print(f"Technical indicators added and saved to {output_file}")
         return data
