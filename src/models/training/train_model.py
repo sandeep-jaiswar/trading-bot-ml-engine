@@ -1,18 +1,22 @@
 import os
 import pandas as pd
 from xgboost import XGBRegressor
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.preprocessing import StandardScaler
 import pickle
-import numpy as np
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def preprocess_data(data: pd.DataFrame):
     """
     Preprocess the data: handle missing values, feature scaling, and feature engineering.
     """
-    # Forward fill missing values
-    data = data.fillna(method='ffill')
+    # Forward fill and backward fill missing values (fixing deprecated usage)
+    data = data.ffill().bfill()
 
     # Features list
     features = [
@@ -21,12 +25,12 @@ def preprocess_data(data: pd.DataFrame):
         "BB_lower", "ATR", "Stoch_K", "Stoch_D", "OBV", "CCI", "ROC", 
         "MFI", "Chaikin", "WILLR", "SAR"
     ]
-
     target = 'Close'
 
     # Create lag features (shift by 1 day)
     for col in features:
-        data[f'{col}_Lag1'] = data[col].shift(1)
+        if col in data.columns:
+            data[f'{col}_Lag1'] = data[col].shift(1)
 
     data.dropna(inplace=True)  # Drop NaN values after creating lag features
 
@@ -39,48 +43,70 @@ def preprocess_data(data: pd.DataFrame):
 
     return X_scaled, y, scaler
 
-def train_model(data: pd.DataFrame, ticker: str):
+def incremental_training(folder_path: str, output_folder: str, initial_model: XGBRegressor = None):
     """
-    Train a model using XGBoost on the provided dataset.
+    Incrementally train a model on multiple XLSX datasets.
     """
-    # Preprocess data
-    X, y, scaler = preprocess_data(data)
+    try:
+        # Initialize model if not provided
+        if initial_model is None:
+            model = XGBRegressor(random_state=42, warm_start=True, n_estimators=100)  # Setting initial n_estimators
+        else:
+            model = initial_model
 
-    # Split data into train and test sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        scaler = None
 
-    # Initialize the model and hyperparameter tuning using GridSearchCV
-    model = XGBRegressor(random_state=42)
-    param_grid = {
-        'n_estimators': [100, 200],
-        'learning_rate': [0.01, 0.1, 0.2],
-        'max_depth': [3, 5, 7],
-        'subsample': [0.8, 1.0],
-        'colsample_bytree': [0.8, 1.0]
-    }
+        # Iterate through each file
+        for file_name in os.listdir(folder_path):
+            if file_name.endswith(".xlsx"):
+                file_path = os.path.join(folder_path, file_name)
 
-    grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=3, scoring='neg_mean_squared_error', n_jobs=-1, verbose=1)
-    grid_search.fit(X_train, y_train)
+                # Load dataset
+                data = pd.read_excel(file_path)
+                logger.info(f"Training on file: {file_name}")
 
-    best_model = grid_search.best_estimator_
+                # Preprocess the data
+                X, y, file_scaler = preprocess_data(data)
 
-    # Evaluate the model
-    y_pred = best_model.predict(X_test)
-    mse = mean_squared_error(y_test, y_pred)
-    mae = mean_absolute_error(y_test, y_pred)
-    r2 = r2_score(y_test, y_pred)
+                # Split data into train and test sets
+                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    print(f"Model Evaluation:\nMSE: {mse:.4f}\nMAE: {mae:.4f}\nR2 Score: {r2:.4f}")
+                # Hyperparameter tuning (optional)
+                # You can perform hyperparameter tuning here or use the same settings
+                # For simplicity, we continue training without any change in parameters
 
-    # Save the model and scaler
-    save_path = os.path.join("src", "models", "artifacts", f"{ticker}_xgb_model.json")
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    
-    best_model.save_model(save_path)
-    print(f"Model saved to: {save_path}")
-    
-    scaler_path = os.path.join("src", "models", "artifacts", f"{ticker}_scaler.pkl")
-    with open(scaler_path, 'wb') as f:
-        pickle.dump(scaler, f)
+                # Train the model on the current dataset with early stopping
+                model.fit(
+                    X_train, 
+                    y_train, 
+                    eval_set=[(X_test, y_test)], 
+                    early_stopping_rounds=10, 
+                    verbose=True,
+                    eval_metric='rmse'  # Directly passing eval_metric here
+                )
 
-    return best_model, scaler
+                # Evaluate the model
+                y_pred = model.predict(X_test)
+                mse = mean_squared_error(y_test, y_pred)
+                mae = mean_absolute_error(y_test, y_pred)
+                r2 = r2_score(y_test, y_pred)
+
+                logger.info(f"File: {file_name} Evaluation:\nMSE: {mse:.4f}\nMAE: {mae:.4f}\nR2 Score: {r2:.4f}")
+
+                # Update the scaler
+                scaler = file_scaler
+
+        # Save the final model and scaler
+        model_path = os.path.join(output_folder, "incremental_xgb_model.json")
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        model.save_model(model_path)
+        logger.info(f"Final model saved to: {model_path}")
+
+        scaler_path = os.path.join(output_folder, "incremental_scaler.pkl")
+        with open(scaler_path, 'wb') as f:
+            pickle.dump(scaler, f)
+
+        return model, scaler
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+        return None, None

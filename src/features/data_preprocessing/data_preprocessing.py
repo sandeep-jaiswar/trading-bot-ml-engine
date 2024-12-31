@@ -63,7 +63,7 @@ def preprocess_data(ticker: str):
         # Save processed data
         data.to_excel(output_file, index=False)
         print(f"Processed data saved to {output_file}")
-
+        
         return data
 
     except FileNotFoundError as e:

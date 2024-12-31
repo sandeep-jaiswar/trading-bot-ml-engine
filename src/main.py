@@ -5,7 +5,7 @@ from utils.db_utils import fetch_all_tickers
 from data.raw.fetch_data import fetch_stock_data
 from features.data_preprocessing.data_preprocessing import preprocess_data
 from features.technical_indicators.technical_indicators import add_technical_indicators
-from models.training.train_model import train_model
+from models.training.train_model import incremental_training
 from backtesting.strategy_validation.backtest import backtest
 
 if __name__ == "__main__":
@@ -20,9 +20,9 @@ if __name__ == "__main__":
         raw_data = fetch_stock_data(ticker, start_date, end_date)
         processed_data = preprocess_data(ticker)
         data_with_indicators = add_technical_indicators(ticker)
-        input_file = os.path.join("src", "data", "processed", f"{ticker}_with_indicators.xlsx")
-        data = pd.read_excel(input_file)
-        trained_model, scaler = train_model(data, ticker)
+        folder_path = os.path.join("src", "data", "processed")
+        output_folder = os.path.join("src", "models", "artifacts")
+        final_model, final_scaler = incremental_training(folder_path, output_folder)
         report = backtest(ticker)
         if report:
             print(json.dumps(report, indent=4))
